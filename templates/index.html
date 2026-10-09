@@ -1,0 +1,73 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevOps Dashboard</title>
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="container">
+        <section class="card">
+            <div class="icon">🚀</div>
+            <h1>DevOps Dashboard</h1>
+            <p class="subtitle">Build · Deploy · Monitor</p>
+
+            <div class="status">
+                <span class="dot"></span>
+                Application Running
+            </div>
+
+            <div class="info">
+                <div>
+                    <span>Application</span>
+                    <strong>Python Flask</strong>
+                </div>
+                <div>
+                    <span>Database</span>
+                    <strong>PostgreSQL</strong>
+                </div>
+                <div>
+                    <span>Platform</span>
+                    <strong>DevOps Lab</strong>
+                </div>
+            </div>
+
+            <h2>My DevOps Tasks</h2>
+
+            <form action="{{ url_for('add_task') }}" method="POST"
+                  class="task-form">
+                <input name="title" maxlength="200"
+                       placeholder="Add a new task..." required>
+                <button type="submit">Add task</button>
+            </form>
+
+            <ul class="tasks">
+                {% for task in tasks %}
+                <li>
+                    <span class="{{ 'done' if task.completed else '' }}">
+                        {{ '✓' if task.completed else '○' }}
+                        {{ task.title }}
+                    </span>
+
+                    {% if not task.completed %}
+                    <form action="{{ url_for('complete_task', task_id=task.id) }}"
+                          method="POST">
+                        <button type="submit" class="complete">
+                            Complete
+                        </button>
+                    </form>
+                    {% endif %}
+                </li>
+                {% else %}
+                <li>No tasks yet. Add your first task!</li>
+                {% endfor %}
+            </ul>
+
+            <a class="health-link" href="/health">Check application health</a>
+        </section>
+    </main>
+</body>
+</html>
