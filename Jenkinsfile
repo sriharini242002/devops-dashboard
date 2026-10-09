@@ -1,4 +1,5 @@
 
+
 pipeline {
     agent any
 
@@ -9,63 +10,63 @@ pipeline {
     }
 
     environment {
-        AWS_REGION    = 'us-west-2'
-        EKS_CLUSTER   = 'devops-dashboard-eks'
-        K8S_NAMESPACE = 'devops-dashboard'
-        APP_NAME      = 'devops-dashboard'
+        AWS_REGION     = 'us-west-2'
+        EKS_CLUSTER    = 'devops-dashboard-eks'
+        K8S_NAMESPACE  = 'devops-dashboard'
+        APP_NAME       = 'devops-dashboard'
         CONTAINER_NAME = 'flask-app'
-        IMAGE_NAME    = 'sriharini242002/devops-dashboard'
+        IMAGE_NAME     = 'sriharini242002/devops-dashboard'
+
+        // Monitoring runs on the monitoring EC2 instance.
+        // These localhost URLs require MobaXterm SSH tunnels
+        // on your laptop.
+        PROMETHEUS_URL = 'http://localhost:9090'
+        GRAFANA_URL    = 'http://localhost:3000'
     }
 
     stages {
 
-        // 1. Download source code from GitHub
         stage('Checkout') {
             steps {
+                echo 'Checking out source code from GitHub...'
+
                 checkout scm
 
                 sh '''
-                    echo "Repository checked out successfully"
+                    echo "Latest Git commit:"
                     git log -1 --oneline
                 '''
             }
         }
 
-        // 2. Basic Python syntax validation
-        stage('Test Application') {
+        stage('Validate Python Application') {
             steps {
+                echo 'Validating Python source code...'
+
                 sh '''
-                    set -eu
-
-                    echo "Checking Python syntax..."
-
+                    python3 --version
                     python3 -m compileall -q app.py
-
-                    echo "Python syntax check passed"
+                    echo "Python validation completed successfully."
                 '''
             }
         }
 
-        // 3. Build a versioned Docker image
         stage('Build Docker Image') {
             steps {
+                echo 'Building the DevOps Dashboard Docker image...'
+
                 sh '''
-                    set -eu
-
-                    docker build \
-                      --pull \
-                      -t "${IMAGE_NAME}:${BUILD_NUMBER}" \
-                      -t "${IMAGE_NAME}:latest" \
-                      .
-
-                    echo "Docker image built successfully"
+                    docker build --pull \
+                        -t "${IMAGE_NAME}:${BUILD_NUMBER}" \
+                        -t "${IMAGE_NAME}:latest" .
                 '''
             }
         }
 
-        // 4. Push images to Docker Hub
-        stage('Push to Docker Hub') {
+        stage('Push Image to Docker Hub') {
             steps {
+                echo 'Pushing Docker images to Docker Hub...'
+
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-creds',
@@ -74,12 +75,10 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        set -eu
                         set +x
-
                         echo "$DOCKER_TOKEN" | docker login \
-                          --username "$DOCKER_USER" \
-                          --password-stdin
+                            --username "$DOCKER_USER" \
+                            --password-stdin
 
                         docker push "${IMAGE_NAME}:${BUILD_NUMBER}"
                         docker push "${IMAGE_NAME}:latest"
@@ -91,95 +90,154 @@ pipeline {
 
             post {
                 always {
-                    sh 'docker logout || true'
+                    sh 'docker logout >/dev/null 2>&1 || true'
                 }
             }
         }
 
-        // 5. Configure kubectl to connect to EKS
-        stage('Configure EKS') {
+        stage('Configure EKS Access') {
             steps {
-                sh '''
-                    set -eu
+                echo 'Configuring AWS and Kubernetes access...'
 
+                sh '''
+                    aws --version
+                    kubectl version --client
+
+                    echo "Checking AWS identity..."
                     aws sts get-caller-identity
 
+                    echo "Updating kubeconfig..."
                     aws eks update-kubeconfig \
-                      --region "$AWS_REGION" \
-                      --name "$EKS_CLUSTER"
+                        --region "$AWS_REGION" \
+                        --name "$EKS_CLUSTER"
 
-                    echo "Checking application namespace..."
-
+                    echo "Checking Kubernetes namespace..."
                     kubectl get namespace "$K8S_NAMESPACE"
                 '''
             }
         }
 
-        // 6. Deploy the exact image built by this Jenkins run
-        stage('Deploy to Kubernetes') {
+        stage('Deploy to EKS') {
             steps {
+                echo 'Deploying the new application image to EKS...'
+
                 sh '''
-                    set -eu
-
-                    echo "Updating Kubernetes Deployment..."
-
                     kubectl set image \
-                      deployment/"$APP_NAME" \
-                      "$CONTAINER_NAME"="${IMAGE_NAME}:${BUILD_NUMBER}" \
-                      --namespace "$K8S_NAMESPACE"
-
-                    echo "Waiting for rollout..."
+                        deployment/"$APP_NAME" \
+                        "$CONTAINER_NAME"="${IMAGE_NAME}:${BUILD_NUMBER}" \
+                        --namespace "$K8S_NAMESPACE"
 
                     kubectl rollout status \
-                      deployment/"$APP_NAME" \
-                      --namespace "$K8S_NAMESPACE" \
-                      --timeout=180s
+                        deployment/"$APP_NAME" \
+                        --namespace "$K8S_NAMESPACE" \
+                        --timeout=180s
                 '''
             }
         }
 
-        // 7. Verify the deployment
         stage('Verify Deployment') {
             steps {
-                sh '''
-                    set -eu
+                echo 'Verifying the application deployment...'
 
+                sh '''
                     echo "Deployment status:"
                     kubectl get deployment "$APP_NAME" \
-                      --namespace "$K8S_NAMESPACE"
-
-                    echo "Pods:"
-                    kubectl get pods \
-                      --namespace "$K8S_NAMESPACE"
-
-                    echo "Services:"
-                    kubectl get services \
-                      --namespace "$K8S_NAMESPACE"
-
-                    echo "Deployed image:"
-                    kubectl get deployment "$APP_NAME" \
-                      --namespace "$K8S_NAMESPACE" \
-                      -o jsonpath='{.spec.template.spec.containers[?(@.name=="flask-app")].image}'
+                        --namespace "$K8S_NAMESPACE"
 
                     echo ""
-                    echo "Deployment pipeline completed successfully."
+                    echo "Application pods:"
+                    kubectl get pods \
+                        --namespace "$K8S_NAMESPACE" \
+                        -o wide
+
+                    echo ""
+                    echo "Kubernetes services:"
+                    kubectl get services \
+                        --namespace "$K8S_NAMESPACE"
+
+                    echo ""
+                    echo "Deployed application image:"
+                    kubectl get deployment "$APP_NAME" \
+                        --namespace "$K8S_NAMESPACE" \
+                        -o jsonpath='{.spec.template.spec.containers[?(@.name=="flask-app")].image}'
+
+                    echo ""
                 '''
+            }
+        }
+
+        stage('Print Application and Monitoring URLs') {
+            steps {
+                script {
+                    echo ''
+                    echo '=================================================='
+                    echo '       DEVOPS DASHBOARD - ACCESS DETAILS'
+                    echo '=================================================='
+
+                    // Retrieve the LoadBalancer DNS dynamically.
+                    def lbDns = sh(
+                        script: '''
+                            kubectl get service "$APP_NAME" \
+                                --namespace "$K8S_NAMESPACE" \
+                                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    if (lbDns) {
+                        echo "Application URL : http://${lbDns}"
+                        echo "Health Check    : http://${lbDns}/health"
+                        echo "Database Test   : http://${lbDns}/db-test"
+                        echo "Prometheus Metrics Endpoint: http://${lbDns}/metrics"
+                    } else {
+                        echo 'Application LoadBalancer DNS is not available yet.'
+                        echo 'Check: kubectl get svc -n devops-dashboard'
+                    }
+
+                    echo ''
+                    echo '=================================================='
+                    echo '       PROMETHEUS AND GRAFANA MONITORING'
+                    echo '=================================================='
+                    echo "Prometheus URL  : ${env.PROMETHEUS_URL}"
+                    echo "Grafana URL     : ${env.GRAFANA_URL}"
+                    echo ''
+                    echo 'IMPORTANT: Prometheus and Grafana are accessed'
+                    echo 'through MobaXterm SSH tunnels on your laptop.'
+                    echo 'Keep the tunnels running while accessing them.'
+                    echo 'These localhost URLs are not public endpoints.'
+                    echo '=================================================='
+                    echo ''
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'SUCCESS: Docker image built, pushed, and deployed to EKS.'
+            echo '''
+            ==========================================
+              PIPELINE COMPLETED SUCCESSFULLY
+            ==========================================
+            Docker image pushed.
+            EKS deployment rollout completed.
+            Application and monitoring URLs printed.
+            ==========================================
+            '''
         }
 
         failure {
-            echo 'FAILED: Check the stage logs above to identify the issue.'
+            echo '''
+            ==========================================
+              PIPELINE FAILED
+            ==========================================
+            Check the stage logs above to identify
+            the error before rerunning the pipeline.
+            ==========================================
+            '''
         }
 
         always {
-            echo "Jenkins build number: ${BUILD_NUMBER}"
+            echo 'Jenkins pipeline execution finished.'
         }
     }
 }
-
