@@ -1,4 +1,7 @@
 
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from flask import Response, g
+import time
 from flask import Flask, render_template, request, redirect, url_for
 import os
 import psycopg2
@@ -6,6 +9,51 @@ from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
+REQUEST_COUNT = Counter(
+    "flask_http_requests_total",
+    "Total number of HTTP requests",
+    ["method", "endpoint", "status"]
+)
+
+REQUEST_LATENCY = Histogram(
+    "flask_http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "endpoint"]
+)
+
+
+@app.before_request
+def start_timer():
+    g.start_time = time.perf_counter()
+
+
+@app.after_request
+def record_metrics(response):
+    # Do not count Prometheus scraping as normal application traffic.
+    if request.endpoint != "metrics":
+        endpoint = request.url_rule.rule if request.url_rule else "unmatched"
+
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=endpoint,
+            status=str(response.status_code)
+        ).inc()
+
+        if hasattr(g, "start_time"):
+            REQUEST_LATENCY.labels(
+                method=request.method,
+                endpoint=endpoint
+            ).observe(time.perf_counter() - g.start_time)
+
+    return response
+
+
+@app.route("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        mimetype=CONTENT_TYPE_LATEST
+    )
 
 def get_db_connection():
     return psycopg2.connect(
@@ -90,3 +138,5 @@ def complete_task(task_id):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+
